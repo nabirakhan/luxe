@@ -33,9 +33,9 @@ def main():
         lines = f.readlines()[2:]  # skip two header lines
     for line in lines:
         parts = line.strip().split()
-        if len(parts) < 2:
+        if len(parts) < 3:
             continue
-        img_name, status = parts[0], parts[1]
+        img_name, status = parts[0], parts[2]
         if status == "train":
             train_images.append(img_name)
 

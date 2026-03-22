@@ -59,8 +59,8 @@ class EOTTransforms:
         cropped = x[:, :, top: top + ch, left: left + cw]
 
         # Pad back to original size (differentiable)
-        pad_bottom = self.image_size - ch
-        pad_right  = self.image_size - cw
+        pad_bottom = self.image_size - ch - top
+        pad_right  = self.image_size - cw - left
         # F.pad order: (left, right, top, bottom)
         return F.pad(cropped, (left, pad_right, top, pad_bottom), mode="constant", value=0)
 
