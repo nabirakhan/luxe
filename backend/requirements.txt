@@ -1,0 +1,16 @@
+torch>=2.0.0
+torchvision>=0.15.0
+diffusers>=0.21.0
+transformers>=4.35.0
+accelerate>=0.24.0
+lpips>=0.1.4
+scikit-image>=0.21.0
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
+Pillow>=10.0.0
+numpy>=1.24.0
+scipy>=1.11.0
+python-magic>=0.4.27
+clip @ git+https://github.com/openai/CLIP.git
+ip_adapter @ git+https://github.com/tencent-ailab/IP-Adapter.git
