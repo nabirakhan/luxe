@@ -7,7 +7,9 @@ const MODES = [
   { id: 'modify', label: 'Outfit-Swap Guard',    desc: 'Attacks InstructPix2Pix and IP-Adapter conditioning. Disrupts appearance-modification and outfit-swap threat class.' },
 ]
 
-function BeforeAfterSlider({ original }) {
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+
+function BeforeAfterSlider({ original, protected: protectedSrc }) {
   const [pos, setPos] = useState(50)
   const containerRef  = useRef(null)
   const dragging      = useRef(false)
@@ -46,8 +48,9 @@ function BeforeAfterSlider({ original }) {
         cursor: 'ew-resize', userSelect: 'none',
       }}
     >
+      {/* Protected image (right side, always underneath) */}
       <img
-        src={original}
+        src={protectedSrc}
         alt="Protected"
         style={{
           position: 'absolute', inset: 0,
@@ -56,6 +59,7 @@ function BeforeAfterSlider({ original }) {
         }}
       />
 
+      {/* Original image (left side, clipped) */}
       <div style={{
         position: 'absolute', inset: 0,
         clipPath: `inset(0 ${100 - pos}% 0 0)`,
@@ -120,15 +124,21 @@ function BeforeAfterSlider({ original }) {
 const STATE = { IDLE: 'idle', PREVIEW: 'preview', PROCESSING: 'processing', DONE: 'done' }
 
 export default function TryIt() {
-  const [mode,       setMode]       = useState('nudify')
-  const [stage,      setStage]      = useState(STATE.IDLE)
-  const [imageSrc,   setImageSrc]   = useState(null)
-  const [progress,   setProgress]   = useState(0)
-  const [draggingOver, setDraggingOver] = useState(false)
-  const inputRef = useRef(null)
+  const [mode,            setMode]            = useState('nudify')
+  const [stage,           setStage]           = useState(STATE.IDLE)
+  const [imageSrc,        setImageSrc]        = useState(null)   // original data URL
+  const [originalResized, setOriginalResized] = useState(null)   // 512×512 canvas data URL
+  const [protectedSrc,    setProtectedSrc]    = useState(null)   // blob URL of protected PNG
+  const [unetMissing,     setUnetMissing]     = useState(false)
+  const [errorMsg,        setErrorMsg]        = useState(null)
+  const [progress,        setProgress]        = useState(0)
+  const [draggingOver,    setDraggingOver]    = useState(false)
+  const inputRef    = useRef(null)
+  const fileRef     = useRef(null)  // holds the raw File for FormData
 
   const loadFile = (file) => {
     if (!file || !file.type.startsWith('image/')) return
+    fileRef.current = file
     const reader = new FileReader()
     reader.onload = (e) => { setImageSrc(e.target.result); setStage(STATE.PREVIEW) }
     reader.readAsDataURL(file)
@@ -139,25 +149,81 @@ export default function TryIt() {
     loadFile(e.dataTransfer.files[0])
   }
 
-  const startProtection = () => {
+  const startProtection = async () => {
+    if (!fileRef.current || !imageSrc) return
     setStage(STATE.PROCESSING)
     setProgress(0)
+    setErrorMsg(null)
+
+    // Animate progress bar while waiting for the API
     let p = 0
     const iv = setInterval(() => {
-      p += Math.random() * 4 + 2
-      setProgress(Math.min(p, 98))
-      if (p >= 98) { clearInterval(iv); setTimeout(() => { setProgress(100); setStage(STATE.DONE) }, 300) }
-    }, 120)
+      p += Math.random() * 2 + 0.5
+      setProgress(Math.min(p, 92))
+    }, 200)
+
+    try {
+      const form = new FormData()
+      form.append('file', fileRef.current)
+      form.append('mode', mode)
+      form.append('texture', 'false')
+
+      const resp = await fetch(`${API_URL}/protect`, { method: 'POST', body: form })
+
+      if (resp.status === 429) {
+        throw new Error('Server is busy — please try again in a moment.')
+      }
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => '')
+        throw new Error(`Protection failed (${resp.status})${text ? ': ' + text : ''}`)
+      }
+
+      const checkpointStatus = resp.headers.get('X-Checkpoint-Status') || ''
+      setUnetMissing(checkpointStatus.includes('MISSING'))
+
+      const blob = await resp.blob()
+      const blobUrl = URL.createObjectURL(blob)
+      setProtectedSrc(blobUrl)
+
+      // Resize original to 512×512 via canvas so slider sides match
+      const img = new Image()
+      img.onload = () => {
+        const canvas = document.createElement('canvas')
+        canvas.width = canvas.height = 512
+        canvas.getContext('2d').drawImage(img, 0, 0, 512, 512)
+        setOriginalResized(canvas.toDataURL())
+        clearInterval(iv)
+        setProgress(100)
+        setStage(STATE.DONE)
+      }
+      img.src = imageSrc
+
+    } catch (err) {
+      clearInterval(iv)
+      setErrorMsg(err.message || 'Something went wrong.')
+      setStage(STATE.PREVIEW)
+    }
   }
 
   const download = () => {
+    if (!protectedSrc) return
     const a = document.createElement('a')
-    a.href     = imageSrc
+    a.href     = protectedSrc
     a.download = 'luxe-protected.png'
     a.click()
   }
 
-  const reset = () => { setStage(STATE.IDLE); setImageSrc(null); setProgress(0) }
+  const reset = () => {
+    if (protectedSrc) URL.revokeObjectURL(protectedSrc)
+    setStage(STATE.IDLE)
+    setImageSrc(null)
+    setOriginalResized(null)
+    setProtectedSrc(null)
+    setUnetMissing(false)
+    setErrorMsg(null)
+    setProgress(0)
+    fileRef.current = null
+  }
 
   return (
     <section
@@ -290,6 +356,17 @@ export default function TryIt() {
                   style={{ width: '100%', maxHeight: '400px', objectFit: 'contain', display: 'block', backgroundColor: 'rgba(16,12,13,0.6)' }}
                 />
               </div>
+              {errorMsg && (
+                <div style={{
+                  marginBottom: '16px', padding: '12px 20px',
+                  backgroundColor: 'rgba(200,60,60,0.1)',
+                  border: '1px solid rgba(200,60,60,0.3)',
+                  borderRadius: '10px', color: 'rgba(255,150,150,0.9)',
+                  fontSize: '13px', textAlign: 'center',
+                }}>
+                  {errorMsg}
+                </div>
+              )}
               <div style={{ display: 'flex', gap: '14px', justifyContent: 'center' }}>
                 <motion.button
                   whileHover={{ scale: 1.04, boxShadow: '0 12px 32px rgba(212,149,107,0.38)' }}
@@ -381,15 +458,29 @@ export default function TryIt() {
             </motion.div>
           )}
 
-          {stage === STATE.DONE && imageSrc && (
+          {stage === STATE.DONE && originalResized && protectedSrc && (
             <motion.div
               key="done"
               initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
               transition={{ duration: 0.5 }}
             >
               <div style={{ marginBottom: '24px' }}>
-                <BeforeAfterSlider original={imageSrc} />
+                {/* Both sides are 512×512 so the slider aligns perfectly */}
+                <BeforeAfterSlider original={originalResized} protected={protectedSrc} />
               </div>
+
+              {unetMissing && (
+                <div style={{
+                  marginBottom: '16px', padding: '10px 18px',
+                  backgroundColor: 'rgba(212,149,107,0.08)',
+                  border: '1px solid rgba(212,149,107,0.25)',
+                  borderRadius: '10px',
+                  fontSize: '12px', color: 'rgba(212,149,107,0.8)',
+                  textAlign: 'center',
+                }}>
+                  PGD fallback used — cloak_unet.pth is missing. Processing took longer than usual.
+                </div>
+              )}
 
               <div style={{
                 display: 'flex', gap: '14px', justifyContent: 'center', flexWrap: 'wrap',
@@ -426,7 +517,7 @@ export default function TryIt() {
                 textAlign: 'center', marginTop: '20px',
                 fontSize: '11px', color: 'rgba(227,220,210,0.28)', letterSpacing: '0.5px',
               }}>
-                Drag the slider to compare. Output is full-quality PNG.
+                Drag the slider to compare. Output is 512×512 PNG.
               </div>
             </motion.div>
           )}
