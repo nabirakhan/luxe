@@ -1,7 +1,7 @@
 """Fine-tune IP-Adapter (IPP) on paired DeepFashion outfit views.
 
 Hyperparameters: AdamW lr=5e-6, 3 epochs.
-Run on Colab T4. Unzip cell at top of session (see train_segformer.py).
+Run on Colab T4. Unzip DeepFashion img only (no seg needed).
 
 Saves checkpoints to Drive. The image_proj_model weights are what
 pgd_modification.py loads via ip_adapter.pth.
@@ -19,6 +19,7 @@ def find_drive_base():
         '/content/drive/MyDrive/Datasets/DLP Project Datasets',
         '/content/drive/MyDrive/DLP Project Datasets',
         '/content/drive/MyDrive/DLP Dataset',
+        '/content/drive/MyDrive/DLP_Project/DLP Project Datasets',
     ]
     for c in candidates:
         if os.path.exists(c):
@@ -75,7 +76,7 @@ DRIVE_CKPT_DIR.mkdir(parents=True, exist_ok=True)
 RESUME_PATH = DRIVE_CKPT_DIR / "ipp_resume.pth"
 INSHOP_FILE = f"{DRIVE_BASE}/DeepFashion/list_item_inshop.txt"
 
-IMG_ROOT   = "/content/deepfashion/img"
+IMG_ROOT   = "/content/deepfashion/img/img"   # correct path after unzip
 EPOCHS     = 3
 LR         = 5e-6
 BATCH_SIZE = 4
@@ -96,10 +97,14 @@ class PairedOutfitDataset(Dataset):
             if len(parts) < 2:
                 continue
             img_name, item_id = parts[0], parts[1]
-            item_to_images.setdefault(item_id, []).append(img_name)
+            # img_name is like "img/WOMEN/..." — strip leading "img/"
+            p = Path(img_name).parts
+            rel = str(Path(*p[1:])) if p[0] == "img" else img_name
+            item_to_images.setdefault(item_id, []).append(rel)
         for item_id, imgs in item_to_images.items():
             for i in range(len(imgs) - 1):
                 self.pairs.append((imgs[i], imgs[i + 1]))
+        print(f"PairedOutfitDataset: {len(self.pairs)} pairs")
 
     def __len__(self):
         return len(self.pairs)
@@ -115,6 +120,7 @@ class PairedOutfitDataset(Dataset):
 
 def train():
     import clip
+    from utils import preprocess_for_clip
 
     dataset = PairedOutfitDataset(IMG_ROOT, INSHOP_FILE)
     loader  = DataLoader(
@@ -133,8 +139,10 @@ def train():
     for p in clip_model.parameters():
         p.requires_grad_(False)
 
-    # VAE (frozen) — used to measure latent alignment
-    vae = AutoencoderKL.from_pretrained("runwayml/stable-diffusion-v1-5", subfolder="vae").to(device)
+    # VAE (frozen)
+    vae = AutoencoderKL.from_pretrained(
+        "runwayml/stable-diffusion-v1-5", subfolder="vae"
+    ).to(device)
     vae.eval()
     for p in vae.parameters():
         p.requires_grad_(False)
@@ -145,10 +153,8 @@ def train():
     optimizer  = AdamW(image_proj.parameters(), lr=LR)
     scaler     = GradScaler()
 
-    from utils import preprocess_for_clip
-
-    start_epoch   = 0
-    best_loss     = float("inf")
+    start_epoch = 0
+    best_loss   = float("inf")
 
     if RESUME_PATH.exists():
         ckpt = torch.load(RESUME_PATH, map_location=device)
@@ -163,6 +169,7 @@ def train():
         image_proj.train()
         total_loss = 0.0
         pbar = tqdm(loader, desc=f"Epoch {epoch+1}/{EPOCHS}")
+
         for step, (imgs_a, imgs_b) in enumerate(pbar):
             imgs_a = imgs_a.to(device)
             imgs_b = imgs_b.to(device)
@@ -175,12 +182,11 @@ def train():
             with autocast():
                 proj = image_proj(clip_feat)  # [B, 768]
 
-                # Target: VAE latent of the paired image (b)
                 with torch.no_grad():
-                    lat_b      = vae.encode(imgs_b * 2 - 1).latent_dist.mean  # [B, 4, 64, 64]
-                    lat_b_pooled = lat_b.mean(dim=[-2, -1])                    # [B, 4]
-                    lat_b_rep  = lat_b_pooled.repeat(1, 768 // 4 + 1)[:, :768]
-                    lat_b_rep  = torch.nn.functional.normalize(lat_b_rep, dim=-1)
+                    lat_b        = vae.encode(imgs_b * 2 - 1).latent_dist.mean  # [B, 4, 64, 64]
+                    lat_b_pooled = lat_b.mean(dim=[-2, -1])                      # [B, 4]
+                    lat_b_rep    = lat_b_pooled.repeat(1, 768 // 4 + 1)[:, :768]
+                    lat_b_rep    = torch.nn.functional.normalize(lat_b_rep, dim=-1)
 
                 proj_norm = torch.nn.functional.normalize(proj, dim=-1)
                 loss      = torch.nn.functional.mse_loss(proj_norm, lat_b_rep)
@@ -200,6 +206,7 @@ def train():
                     "scaler":    scaler.state_dict(),
                     "best_loss": best_loss,
                 }, RESUME_PATH)
+                print(f"  Mid-epoch checkpoint saved (step {step+1})")
 
         avg = total_loss / len(loader)
         print(f"Epoch {epoch+1}/{EPOCHS}  avg_loss={avg:.5f}")
@@ -207,7 +214,6 @@ def train():
         if avg < best_loss:
             best_loss = avg
 
-        # End-of-epoch resume checkpoint
         torch.save({
             "epoch":     epoch,
             "model":     image_proj.state_dict(),
@@ -216,19 +222,20 @@ def train():
             "best_loss": best_loss,
         }, RESUME_PATH)
 
-        ckpt = DRIVE_CKPT_DIR / f"ipp_proj_epoch{epoch+1}.pth"
-        torch.save({"image_proj_model.weight": image_proj.weight.data}, ckpt)
+        ckpt_path = DRIVE_CKPT_DIR / f"ipp_proj_epoch{epoch+1}.pth"
+        torch.save({"image_proj_model.weight": image_proj.weight.data}, ckpt_path)
+        print(f"Checkpoint saved → {ckpt_path}")
 
     # Final save in format expected by pgd_modification.py
     final_path = DRIVE_CKPT_DIR / "ip_adapter.pth"
     torch.save({"image_proj_model.weight": image_proj.weight.data}, final_path)
-    print(f"Saved -> {final_path}")
+    print(f"ip_adapter.pth saved → {final_path}")
 
-    # Also save VAE weights for ModificationLoss IPP path
+    # Save VAE weights for ModificationLoss IPP path
     vae_path = DRIVE_CKPT_DIR / "ipp_vae.pth"
     torch.save(vae.state_dict(), vae_path)
-    print(f"IPP VAE saved -> {vae_path}")
+    print(f"IPP VAE saved → {vae_path}")
+    print("IPP fine-tuning complete.")
 
 
-if __name__ == "__main__":
-    train()
+train()
