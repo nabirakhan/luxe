@@ -10,8 +10,8 @@ This is intentional — it strengthens the white-box surrogate for clothing atta
 Grey-box transfer to vanilla SD v2/SDXL may be weaker as a result; grey-box
 results reported honestly in eval.
 
-Hyperparameters: AdamW lr=1e-5, 5 epochs, fp16.
-Run on Colab T4. Unzip cell at top of session (see train_segformer.py).
+Hyperparameters: AdamW lr=1e-5, 5 epochs, fp16 loading + fp32 attention grads.
+Run on Colab T4. Unzip cell at top of session.
 """
 
 from google.colab import drive
@@ -61,13 +61,12 @@ REPO_BASE  = find_repo_base()
 sys.path.insert(0, REPO_BASE)
 
 from pathlib import Path
-
 import torch
 from torch.optim import AdamW
 from diffusers import StableDiffusionInpaintPipeline
-from accelerate import Accelerator
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
+from torch.cuda.amp import autocast, GradScaler
 
 from data.deepfashion_loader import DeepFashionDataset
 
@@ -82,18 +81,20 @@ DRIVE_CKPT_DIR.mkdir(parents=True, exist_ok=True)
 RESUME_PATH    = DRIVE_CKPT_DIR / "sd_inpaint_resume.pth"
 PARTITION_FILE = f"{DRIVE_BASE}/DeepFashion/list_eval_partition.txt"
 
-IMG_ROOT   = "/content/deepfashion/img"
-SEG_ROOT   = "/content/deepfashion/seg"
+IMG_ROOT   = "/content/deepfashion/img/img"
+SEG_ROOT   = "/content/deepfashion/seg/img_highres"
 EPOCHS     = 5
 LR         = 1e-5
 BATCH_SIZE = 2
+device     = "cuda"
 
 
 def get_attention_params(unet):
-    """Return only cross-attention and self-attention parameters."""
+    """Return only attention params, cast to fp32 for stable gradient flow."""
     params = []
     for name, p in unet.named_parameters():
         if "attn" in name:
+            p.data = p.data.float()  # cast to fp32
             p.requires_grad_(True)
             params.append(p)
         else:
@@ -102,10 +103,7 @@ def get_attention_params(unet):
 
 
 def train():
-    accelerator = Accelerator(mixed_precision="fp16")
-    device = accelerator.device
-
-    print("Loading SD v1.5 inpainting pipeline...")
+    print("Loading SD v1.5 inpainting pipeline (fp16)...")
     pipe = StableDiffusionInpaintPipeline.from_pretrained(
         "runwayml/stable-diffusion-inpainting",
         torch_dtype=torch.float16,
@@ -120,8 +118,10 @@ def train():
     for p in vae.parameters():
         p.requires_grad_(False)
 
+    # Attention params are cast to fp32 inside get_attention_params
     attn_params = get_attention_params(unet)
     optimizer   = AdamW(attn_params, lr=LR)
+    scaler      = GradScaler()
 
     dataset = DeepFashionDataset(IMG_ROOT, SEG_ROOT, PARTITION_FILE, split="train")
     loader  = DataLoader(
@@ -134,9 +134,7 @@ def train():
         prefetch_factor=2,
     )
 
-    unet, optimizer, loader = accelerator.prepare(unet, optimizer, loader)
-
-    # Compute null text embedding once — it never changes across steps
+    # Compute null text embedding once
     enc      = pipe.text_encoder.to(device)
     null_ids = pipe.tokenizer(
         "", return_tensors="pt", padding="max_length",
@@ -144,16 +142,16 @@ def train():
     ).input_ids.to(device)
     with torch.no_grad():
         encoder_hidden = enc(null_ids).last_hidden_state
-    # Expand to batch size will be handled via broadcasting in the loop
 
-    start_epoch   = 0
-    best_loss     = float("inf")
+    start_epoch = 0
+    best_loss   = float("inf")
 
     if RESUME_PATH.exists():
         ckpt = torch.load(RESUME_PATH, map_location=device)
         start_epoch = ckpt["epoch"] + 1
-        accelerator.unwrap_model(unet).load_state_dict(ckpt["model"])
+        unet.load_state_dict(ckpt["model"])
         optimizer.load_state_dict(ckpt["optimizer"])
+        scaler.load_state_dict(ckpt["scaler"])
         best_loss = ckpt["best_loss"]
         print(f"Resumed from epoch {ckpt['epoch'] + 1}, best_loss={best_loss:.4f}")
 
@@ -161,6 +159,7 @@ def train():
         unet.train()
         total_loss = 0.0
         pbar = tqdm(loader, desc=f"Epoch {epoch+1}/{EPOCHS}")
+
         for step, (imgs, masks) in enumerate(pbar):
             imgs  = imgs.to(device, dtype=torch.float16)
             masks = masks.to(device, dtype=torch.float16)
@@ -177,30 +176,38 @@ def train():
 
             masked_imgs    = imgs * (1 - masks)
             masked_latents = vae.encode(masked_imgs * 2 - 1).latent_dist.sample() * vae.config.scaling_factor
-            mask_resized   = torch.nn.functional.interpolate(masks, size=latents.shape[-2:], mode="nearest")
+            mask_resized   = torch.nn.functional.interpolate(
+                masks, size=latents.shape[-2:], mode="nearest"
+            )
 
             model_input = torch.cat([noisy_latents, mask_resized, masked_latents], dim=1)
+            hidden      = encoder_hidden.expand(imgs.shape[0], -1, -1)
 
-            # encoder_hidden is [1, seq_len, 768] — broadcast across batch
-            hidden = encoder_hidden.expand(imgs.shape[0], -1, -1)
-
-            with accelerator.autocast():
+            # autocast handles fp16/fp32 mixed precision correctly
+            # attention params are fp32, rest is fp16 — no conflict
+            with autocast():
                 pred_noise = unet(model_input, timesteps, encoder_hidden_states=hidden).sample
-                loss       = torch.nn.functional.mse_loss(pred_noise, noise)
+                loss       = torch.nn.functional.mse_loss(
+                    pred_noise.float(), noise.float()  # compare in fp32
+                )
 
-            accelerator.backward(loss)
-            optimizer.step()
             optimizer.zero_grad()
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+
             total_loss += loss.item()
             pbar.set_postfix({"loss": f"{loss.item():.4f}"})
 
             if (step + 1) % 500 == 0:
                 torch.save({
                     "epoch":     epoch,
-                    "model":     accelerator.unwrap_model(unet).state_dict(),
+                    "model":     unet.state_dict(),
                     "optimizer": optimizer.state_dict(),
+                    "scaler":    scaler.state_dict(),
                     "best_loss": best_loss,
                 }, RESUME_PATH)
+                print(f"  Mid-epoch checkpoint saved (step {step+1})")
 
         avg_loss = total_loss / len(loader)
         print(f"Epoch {epoch+1}/{EPOCHS}  avg_loss={avg_loss:.4f}")
@@ -208,23 +215,22 @@ def train():
         if avg_loss < best_loss:
             best_loss = avg_loss
 
-        # End-of-epoch resume checkpoint
         torch.save({
             "epoch":     epoch,
-            "model":     accelerator.unwrap_model(unet).state_dict(),
+            "model":     unet.state_dict(),
             "optimizer": optimizer.state_dict(),
+            "scaler":    scaler.state_dict(),
             "best_loss": best_loss,
         }, RESUME_PATH)
 
         ckpt_path = DRIVE_CKPT_DIR / f"sd_inpaint_unet_epoch{epoch+1}.pth"
-        torch.save(accelerator.unwrap_model(unet).state_dict(), ckpt_path)
+        torch.save(unet.state_dict(), ckpt_path)
+        print(f"Checkpoint saved → {ckpt_path}")
 
-    # Save final VAE (unchanged) for use in InpaintLoss
     vae_path = DRIVE_CKPT_DIR / "sd_inpaint_vae.pth"
     torch.save(vae.state_dict(), vae_path)
-    print(f"VAE saved to {vae_path}")
+    print(f"VAE saved → {vae_path}")
     print("SD inpainting fine-tuning complete.")
 
 
-if __name__ == "__main__":
-    train()
+train()
