@@ -1,16 +1,13 @@
 """Train SegFormer-B2 with a 20-class LIP head.
 
-Run on Colab T4. Mount Drive and unzip datasets first (see unzip cell below).
+Run on Colab T4. Mount Drive and unzip LIP datasets first.
 
 Unzip cell (run once per session):
 -----------------------------------------------------------------------
 import zipfile, os
-
 datasets = [
-    ('/content/drive/MyDrive/DLP Dataset/DeepFashion/Img/img.zip', '/content/deepfashion/img/'),
-    ('/content/drive/MyDrive/DLP Dataset/DeepFashion/img_highres_seg.zip', '/content/deepfashion/seg/'),
-    ('/content/drive/MyDrive/DLP Dataset/Look Into Person/TrainVal_images/TrainVal_images.zip', '/content/lip/images/'),
-    ('/content/drive/MyDrive/DLP Dataset/Look Into Person/TrainVal_parsing_annotations/TrainVal_parsing_annotations/TrainVal_parsing_annotations.zip', '/content/lip/annotations/'),
+    ('/content/drive/MyDrive/Datasets/DLP Project Datasets/Look Into Person/TrainVal_images/TrainVal_images.zip', '/content/lip/images/'),
+    ('/content/drive/MyDrive/Datasets/DLP Project Datasets/Look Into Person/TrainVal_parsing_annotations/TrainVal_parsing_annotations.zip', '/content/lip/annotations/'),
 ]
 for zip_path, extract_to in datasets:
     if not os.path.exists(extract_to):
@@ -24,7 +21,7 @@ for zip_path, extract_to in datasets:
 -----------------------------------------------------------------------
 
 Hyperparameters: AdamW lr=6e-5, cosine LR schedule, 20 epochs.
-Saves checkpoints to Drive after each epoch.
+Saves checkpoints to Drive after each epoch. Resume-safe.
 """
 
 from google.colab import drive
@@ -39,6 +36,7 @@ def find_drive_base():
         '/content/drive/MyDrive/Datasets/DLP Project Datasets',
         '/content/drive/MyDrive/DLP Project Datasets',
         '/content/drive/MyDrive/DLP Dataset',
+        '/content/drive/MyDrive/DLP_Project/DLP Project Datasets',
     ]
     for c in candidates:
         if os.path.exists(c):
@@ -137,18 +135,21 @@ def train():
 
     if RESUME_PATH.exists():
         ckpt = torch.load(RESUME_PATH, map_location=device)
-        start_epoch = ckpt["epoch"] + 1
+        start_epoch   = ckpt["epoch"] + 1
         model.load_state_dict(ckpt["model"])
         optimizer.load_state_dict(ckpt["optimizer"])
         scheduler.load_state_dict(ckpt["scheduler"])
         scaler.load_state_dict(ckpt["scaler"])
         best_val_loss = ckpt["best_loss"]
         print(f"Resumed from epoch {ckpt['epoch'] + 1}, best_loss={best_val_loss:.4f}")
+    else:
+        print("No resume checkpoint — starting fresh")
 
     for epoch in range(start_epoch, EPOCHS):
         model.train()
         total_loss = 0.0
         pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{EPOCHS}")
+
         for step, (imgs, labels) in enumerate(pbar):
             imgs   = imgs.to(device)
             labels = labels.squeeze(1).to(device)
@@ -177,6 +178,7 @@ def train():
                     "scaler":    scaler.state_dict(),
                     "best_loss": best_val_loss,
                 }, RESUME_PATH)
+                print(f"  Mid-epoch checkpoint saved (step {step+1})")
 
         scheduler.step()
 
@@ -199,12 +201,13 @@ def train():
         avg_miou  = sum(miou_scores) / len(miou_scores) if miou_scores else 0.0
         print(f"Epoch {epoch+1}/{EPOCHS}  train={avg_train:.4f}  val={avg_val:.4f}  mIoU={avg_miou:.4f}")
 
+        # Save best model
         if avg_val < best_val_loss:
             best_val_loss = avg_val
             torch.save(model.state_dict(), DRIVE_CKPT_DIR / "segformer_lip.pth")
-            print(f"  -> Best model saved (val={avg_val:.4f})")
+            print(f"  Best model saved (val={avg_val:.4f}  mIoU={avg_miou:.4f})")
 
-        # End-of-epoch resume checkpoint
+        # End-of-epoch resume checkpoint with updated best_val_loss
         torch.save({
             "epoch":     epoch,
             "model":     model.state_dict(),
@@ -214,11 +217,10 @@ def train():
             "best_loss": best_val_loss,
         }, RESUME_PATH)
 
-        ckpt_path = DRIVE_CKPT_DIR / f"segformer_lip_epoch{epoch+1}.pth"
-        torch.save(model.state_dict(), ckpt_path)
+        # Per-epoch checkpoint
+        torch.save(model.state_dict(), DRIVE_CKPT_DIR / f"segformer_lip_epoch{epoch+1}.pth")
 
     print("Training complete.")
 
 
-if __name__ == "__main__":
-    train()
+train()
