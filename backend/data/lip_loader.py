@@ -1,8 +1,10 @@
-fixed_loader = '''"""Look Into Person (LIP) dataset loader for SegFormer training.
+"""Look Into Person (LIP) dataset loader for SegFormer training.
 
 Zip extracts to:
-  /content/lip/images/train_images/*.jpg      (all images, flat)
-  /content/lip/annotations/train_segmentations/*.png  (all annotations, flat)
+  /content/lip/images/train_images/*.jpg          (30,462 images)
+  /content/lip/images/val_images/*.jpg            (10,000 images)
+  /content/lip/annotations/train_segmentations/*.png  (30,462 masks)
+  /content/lip/annotations/val_segmentations/*.png    (10,000 masks)
 
 Train/val split from train_id.txt and val_id.txt.
 """
@@ -26,12 +28,16 @@ def _load_stems(txt_path):
 
 class LIPDataset(Dataset):
     def __init__(self, img_dir: str, ann_dir: str, split: str = "train"):
-        self.img_dir = Path(img_dir) / "train_images"
-        self.ann_dir = Path(ann_dir) / "train_segmentations"
-        id_txt = TRAIN_ID_TXT if split == "train" else VAL_ID_TXT
-        all_stems = _load_stems(id_txt)
+        if split == "train":
+            self.img_dir = Path(img_dir) / "train_images"
+            self.ann_dir = Path(ann_dir) / "train_segmentations"
+            id_txt = TRAIN_ID_TXT
+        else:
+            self.img_dir = Path(img_dir) / "val_images"
+            self.ann_dir = Path(ann_dir) / "val_segmentations"
+            id_txt = VAL_ID_TXT
 
-        # Build lookup dict once at init — no rglob per item
+        all_stems = _load_stems(id_txt)
         available = {p.stem for p in self.img_dir.glob("*.jpg")}
         self.stems = [s for s in all_stems if s in available]
         print(f"[LIPDataset] split={split}  found={len(self.stems)}/{len(all_stems)}")
@@ -71,9 +77,4 @@ def get_lip_loaders(img_dir, ann_dir, batch_size=8, binary=False):
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,  num_workers=2, pin_memory=True)
     val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True)
     return train_loader, val_loader
-'''
 
-with open('/content/Luxe/backend/data/lip_loader.py', 'w') as f:
-    f.write(fixed_loader)
-
-print("✅ lip_loader.py fixed and saved")
