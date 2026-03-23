@@ -199,6 +199,11 @@ def train():
         avg_miou  = sum(miou_scores) / len(miou_scores) if miou_scores else 0.0
         print(f"Epoch {epoch+1}/{EPOCHS}  train={avg_train:.4f}  val={avg_val:.4f}  mIoU={avg_miou:.4f}")
 
+        if avg_val < best_val_loss:
+            best_val_loss = avg_val
+            torch.save(model.state_dict(), DRIVE_CKPT_DIR / "segformer_lip.pth")
+            print(f"  -> Best model saved (val={avg_val:.4f})")
+
         # End-of-epoch resume checkpoint
         torch.save({
             "epoch":     epoch,
@@ -211,10 +216,6 @@ def train():
 
         ckpt_path = DRIVE_CKPT_DIR / f"segformer_lip_epoch{epoch+1}.pth"
         torch.save(model.state_dict(), ckpt_path)
-        if avg_val < best_val_loss:
-            best_val_loss = avg_val
-            torch.save(model.state_dict(), DRIVE_CKPT_DIR / "segformer_lip.pth")
-            print(f"  -> Best model saved (val={avg_val:.4f})")
 
     print("Training complete.")
 

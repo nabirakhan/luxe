@@ -205,6 +205,9 @@ def train():
         avg_loss = total_loss / len(loader)
         print(f"Epoch {epoch+1}/{EPOCHS}  avg_loss={avg_loss:.4f}")
 
+        if avg_loss < best_loss:
+            best_loss = avg_loss
+
         # End-of-epoch resume checkpoint
         torch.save({
             "epoch":     epoch,
@@ -212,9 +215,6 @@ def train():
             "optimizer": optimizer.state_dict(),
             "best_loss": best_loss,
         }, RESUME_PATH)
-
-        if avg_loss < best_loss:
-            best_loss = avg_loss
 
         ckpt_path = DRIVE_CKPT_DIR / f"sd_inpaint_unet_epoch{epoch+1}.pth"
         torch.save(accelerator.unwrap_model(unet).state_dict(), ckpt_path)
