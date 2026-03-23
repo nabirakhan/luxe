@@ -204,6 +204,9 @@ def train():
         avg = total_loss / len(loader)
         print(f"Epoch {epoch+1}/{EPOCHS}  avg_loss={avg:.5f}")
 
+        if avg < best_loss:
+            best_loss = avg
+
         # End-of-epoch resume checkpoint
         torch.save({
             "epoch":     epoch,
@@ -212,9 +215,6 @@ def train():
             "scaler":    scaler.state_dict(),
             "best_loss": best_loss,
         }, RESUME_PATH)
-
-        if avg < best_loss:
-            best_loss = avg
 
         ckpt = DRIVE_CKPT_DIR / f"ipp_proj_epoch{epoch+1}.pth"
         torch.save({"image_proj_model.weight": image_proj.weight.data}, ckpt)
