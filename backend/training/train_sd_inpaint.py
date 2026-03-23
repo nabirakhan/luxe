@@ -14,10 +14,52 @@ Hyperparameters: AdamW lr=1e-5, 5 epochs, fp16.
 Run on Colab T4. Unzip cell at top of session (see train_segformer.py).
 """
 
-import sys
-sys.path.insert(0, "/content/drive/MyDrive/Luxe/backend")
-
+from google.colab import drive
 import os
+drive.mount('/content/drive')
+
+import sys
+
+
+def find_drive_base():
+    candidates = [
+        '/content/drive/MyDrive/Datasets/DLP Project Datasets',
+        '/content/drive/MyDrive/DLP Project Datasets',
+        '/content/drive/MyDrive/DLP Dataset',
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            print(f"Dataset base: {c}")
+            return c
+    for root, dirs, files in os.walk('/content/drive/MyDrive'):
+        depth = root.replace('/content/drive/MyDrive', '').count(os.sep)
+        if depth > 4:
+            dirs.clear()
+            continue
+        if 'DeepFashion' in dirs:
+            print(f"Dataset base found: {root}")
+            return root
+    raise FileNotFoundError("Could not find dataset folder. Check Drive is mounted.")
+
+
+def find_repo_base():
+    candidates = [
+        '/content/Luxe/backend',
+        '/content/luxe/backend',
+        '/content/drive/MyDrive/Luxe/backend',
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            print(f"Repo base: {c}")
+            return c
+    raise FileNotFoundError("Luxe repo not found. Run: git clone https://github.com/nabirakhan/luxe /content/Luxe")
+
+
+DRIVE_BASE = find_drive_base()
+REPO_BASE  = find_repo_base()
+
+sys.path.insert(0, REPO_BASE)
+
 from pathlib import Path
 
 import torch
@@ -25,18 +67,26 @@ from torch.optim import AdamW
 from diffusers import StableDiffusionInpaintPipeline
 from accelerate import Accelerator
 from torch.utils.data import DataLoader
+from tqdm.auto import tqdm
 
 from data.deepfashion_loader import DeepFashionDataset
 
-DRIVE_CKPT_DIR = Path("/content/drive/MyDrive/Luxe/checkpoints")
+if not torch.cuda.is_available():
+    raise RuntimeError("No GPU — switch Colab runtime to T4")
+print(f"GPU: {torch.cuda.get_device_name(0)}")
+print(f"Memory: {torch.cuda.get_device_properties(0).total_memory/1e9:.1f}GB")
+
+DRIVE_CKPT_DIR = Path(f"{DRIVE_BASE}/checkpoints")
 DRIVE_CKPT_DIR.mkdir(parents=True, exist_ok=True)
 
-IMG_ROOT       = "/content/deepfashion/img"
-SEG_ROOT       = "/content/deepfashion/seg"
-PARTITION_FILE = "/content/deepfashion/list_eval_partition.txt"
-EPOCHS         = 5
-LR             = 1e-5
-BATCH_SIZE     = 2
+RESUME_PATH    = DRIVE_CKPT_DIR / "sd_inpaint_resume.pth"
+PARTITION_FILE = f"{DRIVE_BASE}/DeepFashion/list_eval_partition.txt"
+
+IMG_ROOT   = "/content/deepfashion/img"
+SEG_ROOT   = "/content/deepfashion/seg"
+EPOCHS     = 5
+LR         = 1e-5
+BATCH_SIZE = 2
 
 
 def get_attention_params(unet):
@@ -62,8 +112,8 @@ def train():
         safety_checker=None,
         requires_safety_checker=False,
     )
-    unet    = pipe.unet.to(device)
-    vae     = pipe.vae.to(device)
+    unet            = pipe.unet.to(device)
+    vae             = pipe.vae.to(device)
     noise_scheduler = pipe.scheduler
 
     vae.eval()
@@ -74,14 +124,44 @@ def train():
     optimizer   = AdamW(attn_params, lr=LR)
 
     dataset = DeepFashionDataset(IMG_ROOT, SEG_ROOT, PARTITION_FILE, split="train")
-    loader  = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=2)
+    loader  = DataLoader(
+        dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=True,
+        num_workers=2,
+        pin_memory=True,
+        persistent_workers=True,
+        prefetch_factor=2,
+    )
 
     unet, optimizer, loader = accelerator.prepare(unet, optimizer, loader)
 
-    for epoch in range(EPOCHS):
+    # Compute null text embedding once — it never changes across steps
+    enc      = pipe.text_encoder.to(device)
+    null_ids = pipe.tokenizer(
+        "", return_tensors="pt", padding="max_length",
+        max_length=pipe.tokenizer.model_max_length,
+    ).input_ids.to(device)
+    with torch.no_grad():
+        encoder_hidden = enc(null_ids).last_hidden_state
+    # Expand to batch size will be handled via broadcasting in the loop
+
+    start_epoch   = 0
+    best_loss     = float("inf")
+
+    if RESUME_PATH.exists():
+        ckpt = torch.load(RESUME_PATH, map_location=device)
+        start_epoch = ckpt["epoch"] + 1
+        accelerator.unwrap_model(unet).load_state_dict(ckpt["model"])
+        optimizer.load_state_dict(ckpt["optimizer"])
+        best_loss = ckpt["best_loss"]
+        print(f"Resumed from epoch {ckpt['epoch'] + 1}, best_loss={best_loss:.4f}")
+
+    for epoch in range(start_epoch, EPOCHS):
         unet.train()
         total_loss = 0.0
-        for step, (imgs, masks) in enumerate(loader):
+        pbar = tqdm(loader, desc=f"Epoch {epoch+1}/{EPOCHS}")
+        for step, (imgs, masks) in enumerate(pbar):
             imgs  = imgs.to(device, dtype=torch.float16)
             masks = masks.to(device, dtype=torch.float16)
 
@@ -89,39 +169,53 @@ def train():
                 latents = vae.encode(imgs * 2 - 1).latent_dist.sample() * vae.config.scaling_factor
 
             noise     = torch.randn_like(latents)
-            timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps,
-                                      (latents.shape[0],), device=device).long()
+            timesteps = torch.randint(
+                0, noise_scheduler.config.num_train_timesteps,
+                (latents.shape[0],), device=device,
+            ).long()
             noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
 
-            # Masked latents for inpainting conditioning
-            masked_imgs   = imgs * (1 - masks)
+            masked_imgs    = imgs * (1 - masks)
             masked_latents = vae.encode(masked_imgs * 2 - 1).latent_dist.sample() * vae.config.scaling_factor
-            mask_resized  = torch.nn.functional.interpolate(masks, size=latents.shape[-2:], mode="nearest")
+            mask_resized   = torch.nn.functional.interpolate(masks, size=latents.shape[-2:], mode="nearest")
 
             model_input = torch.cat([noisy_latents, mask_resized, masked_latents], dim=1)
 
-            # Unconditional (null text embedding)
-            enc = pipe.text_encoder
-            null_ids = pipe.tokenizer("", return_tensors="pt", padding="max_length",
-                                      max_length=pipe.tokenizer.model_max_length).input_ids.to(device)
-            with torch.no_grad():
-                encoder_hidden = enc(null_ids).last_hidden_state
+            # encoder_hidden is [1, seq_len, 768] — broadcast across batch
+            hidden = encoder_hidden.expand(imgs.shape[0], -1, -1)
 
-            pred_noise = unet(model_input, timesteps, encoder_hidden_states=encoder_hidden).sample
-            loss = torch.nn.functional.mse_loss(pred_noise, noise)
+            with accelerator.autocast():
+                pred_noise = unet(model_input, timesteps, encoder_hidden_states=hidden).sample
+                loss       = torch.nn.functional.mse_loss(pred_noise, noise)
 
             accelerator.backward(loss)
             optimizer.step()
             optimizer.zero_grad()
             total_loss += loss.item()
+            pbar.set_postfix({"loss": f"{loss.item():.4f}"})
 
-            if step % 100 == 0:
-                print(f"  Epoch {epoch+1} step {step}  loss={loss.item():.4f}")
+            if (step + 1) % 500 == 0:
+                torch.save({
+                    "epoch":     epoch,
+                    "model":     accelerator.unwrap_model(unet).state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "best_loss": best_loss,
+                }, RESUME_PATH)
 
         avg_loss = total_loss / len(loader)
         print(f"Epoch {epoch+1}/{EPOCHS}  avg_loss={avg_loss:.4f}")
 
-        # Save UNet + VAE to Drive
+        # End-of-epoch resume checkpoint
+        torch.save({
+            "epoch":     epoch,
+            "model":     accelerator.unwrap_model(unet).state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "best_loss": best_loss,
+        }, RESUME_PATH)
+
+        if avg_loss < best_loss:
+            best_loss = avg_loss
+
         ckpt_path = DRIVE_CKPT_DIR / f"sd_inpaint_unet_epoch{epoch+1}.pth"
         torch.save(accelerator.unwrap_model(unet).state_dict(), ckpt_path)
 
