@@ -7,19 +7,14 @@ Saves checkpoints to Drive. The image_proj_model weights are what
 pgd_modification.py loads via ip_adapter.pth.
 """
 
-from google.colab import drive
 import os
-drive.mount('/content/drive')
 
 import sys
 
 
 def find_drive_base():
     candidates = [
-        '/content/drive/MyDrive/Datasets/DLP Project Datasets',
-        '/content/drive/MyDrive/DLP Project Datasets',
-        '/content/drive/MyDrive/DLP Dataset',
-        '/content/drive/MyDrive/DLP_Project/DLP Project Datasets',
+        '/content/drive/MyDrive/ColabNotebooks/DLP Project Datasets',
     ]
     for c in candidates:
         if os.path.exists(c):
@@ -76,7 +71,7 @@ DRIVE_CKPT_DIR.mkdir(parents=True, exist_ok=True)
 RESUME_PATH = DRIVE_CKPT_DIR / "ipp_resume.pth"
 INSHOP_FILE = f"{DRIVE_BASE}/DeepFashion/list_item_inshop.txt"
 
-IMG_ROOT   = "/content/deepfashion/img/img"   # correct path after unzip
+IMG_ROOT   = "/content/deepfashion/img/img"
 EPOCHS     = 3
 LR         = 5e-6
 BATCH_SIZE = 4
