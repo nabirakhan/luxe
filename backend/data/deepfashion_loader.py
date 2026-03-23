@@ -1,7 +1,7 @@
 """DeepFashion dataset loader for adversarial training.
 
-Images: 256×256 JPGs from Img/img.zip → /content/deepfashion/img/
-Segmentation masks: color PNGs from img_highres_seg.zip → /content/deepfashion/seg/
+Images: 256×256 JPGs from Img/img.zip → /content/deepfashion/img/img/
+Segmentation masks: color PNGs from img_highres_seg.zip → /content/deepfashion/seg/img_highres/
   Note: img_highres_seg.zip is at DeepFashion/img_highres_seg.zip on Drive,
   NOT inside Anno/segmentation/.
 
@@ -14,6 +14,7 @@ Preprocessing: direct resize to 512×512 (no centre-crop) to match protect.py
 inference exactly — same distribution at train and inference time.
 
 Train/val split from list_eval_partition.txt (evaluation_status == "train").
+File has 3 columns: image_name, item_id, evaluation_status.
 Paired views from list_item_inshop.txt.
 """
 
@@ -62,17 +63,22 @@ class DeepFashionDataset(Dataset):
         self.seg_root = Path(seg_root)
         self.split = split
 
-        # Parse partition file: columns are image_name, evaluation_status
+        # Parse partition file.
+        # File format (3 columns): image_name  item_id  evaluation_status
+        # First line: total count. Second line: header. Data starts line 3.
         self.samples = []
         with open(partition_file) as f:
-            lines = f.readlines()[2:]  # skip header lines
+            lines = f.readlines()[2:]  # skip count line + header line
         for line in lines:
             parts = line.strip().split()
-            if len(parts) < 2:
+            if len(parts) < 3:
                 continue
-            img_name, status = parts[0], parts[1]
+            img_name = parts[0]   # e.g. img/WOMEN/Dresses/id_00000002/02_1_front.jpg
+            status   = parts[2]   # train / val / test — parts[1] is item_id, NOT status
             if status == split:
                 self.samples.append(img_name)
+
+        print(f"DeepFashionDataset: {len(self.samples)} {split} samples")
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -80,17 +86,22 @@ class DeepFashionDataset(Dataset):
     def __getitem__(self, idx: int):
         img_name = self.samples[idx]
 
-        # Load image — direct resize to 512×512, no centre-crop
-        img_path = self.img_root / img_name
+        # img_name is like "img/WOMEN/Dresses/id_00000002/02_1_front.jpg"
+        # img_root is /content/deepfashion/img/img — strip leading "img/" from img_name
+        rel = Path(img_name)
+        parts = rel.parts
+        # parts[0] is 'img', rest is the actual relative path
+        rel_no_prefix = Path(*parts[1:]) if parts[0] == 'img' else rel
+
+        img_path = self.img_root / rel_no_prefix
         img = Image.open(img_path).convert("RGB").resize((512, 512), Image.LANCZOS)
         img_tensor = torch.from_numpy(np.array(img, dtype=np.float32) / 255.0).permute(2, 0, 1)
 
-        # Load segmentation mask
-        seg_name = Path(img_name).stem + ".png"
-        seg_path = self.seg_root / Path(img_name).parent / seg_name
+        # Segmentation mask — same relative path but .png extension
+        seg_rel  = rel_no_prefix.with_suffix(".png")
+        seg_path = self.seg_root / seg_rel
         if seg_path.exists():
             mask_np = _build_attack_mask(str(seg_path))
-            # Nearest-neighbour resize to preserve binary values
             mask_img = Image.fromarray(mask_np * 255).resize((512, 512), Image.NEAREST)
             mask_tensor = torch.from_numpy(np.array(mask_img, dtype=np.float32) / 255.0).unsqueeze(0)
         else:
