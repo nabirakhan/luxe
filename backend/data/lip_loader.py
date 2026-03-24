@@ -17,8 +17,16 @@ from torch.utils.data import Dataset, DataLoader
 
 HIGH_ATTACK_CLASSES = {5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17}
 
-TRAIN_ID_TXT = "/content/drive/MyDrive/dlp_project/DLP Project Datasets/Look Into Person/TrainVal_images/train_id.txt"
-VAL_ID_TXT   = "/content/drive/MyDrive/dlp_project/DLP Project Datasets/Look Into Person/TrainVal_images/val_id.txt"
+# Works on both Colab and Kaggle
+def _find_id_txt(filename):
+    candidates = [
+        f"/content/lip/{filename}",
+        f"/content/drive/MyDrive/dlp_project/DLP Project Datasets/Look Into Person/TrainVal_images/{filename}",
+    ]
+    for p in candidates:
+        if Path(p).exists():
+            return p
+    raise FileNotFoundError(f"{filename} not found. Tried: {candidates}")
 
 
 def _load_stems(txt_path):
@@ -31,11 +39,11 @@ class LIPDataset(Dataset):
         if split == "train":
             self.img_dir = Path(img_dir) / "train_images"
             self.ann_dir = Path(ann_dir) / "train_segmentations"
-            id_txt = TRAIN_ID_TXT
+            id_txt = _find_id_txt("train_id.txt")
         else:
             self.img_dir = Path(img_dir) / "val_images"
             self.ann_dir = Path(ann_dir) / "val_segmentations"
-            id_txt = VAL_ID_TXT
+            id_txt = _find_id_txt("val_id.txt")
 
         all_stems = _load_stems(id_txt)
         available = {p.stem for p in self.img_dir.glob("*.jpg")}
@@ -77,4 +85,3 @@ def get_lip_loaders(img_dir, ann_dir, batch_size=8, binary=False):
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,  num_workers=2, pin_memory=True)
     val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True)
     return train_loader, val_loader
-
