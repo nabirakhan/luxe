@@ -2,7 +2,6 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# System deps for python-magic and image libs
 RUN apt-get update && apt-get install -y \
     git \
     libmagic1 \
@@ -15,8 +14,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-RUN python download_checkpoints.py
+EXPOSE 8000
 
-EXPOSE 7860
-
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7860"]
+CMD ["sh", "start.sh"]
