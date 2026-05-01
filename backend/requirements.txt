@@ -14,3 +14,4 @@ scipy>=1.11.0
 python-magic>=0.4.27
 clip @ git+https://github.com/openai/CLIP.git
 ip_adapter @ git+https://github.com/tencent-ailab/IP-Adapter.git
+gdown>=5.1.0
