@@ -38,7 +38,6 @@ def main():
         output=str(DEST),
         quiet=False,
         use_cookies=False,
-        remaining_ok=True,
         fuzzy=True,
     )
 
