@@ -37,8 +37,6 @@ def main():
         id=FOLDER_ID,
         output=str(DEST),
         quiet=False,
-        use_cookies=False,
-        fuzzy=True,
     )
 
     # Verify
