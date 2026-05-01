@@ -7,7 +7,7 @@ const MODES = [
   { id: 'modify', label: 'Outfit-Swap Guard',    desc: 'Attacks InstructPix2Pix and IP-Adapter conditioning. Disrupts appearance-modification and outfit-swap threat class.' },
 ]
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_URL = (import.meta.env.VITE_API_URL || 'http://localhost:8000').replace(/\/$/, '')
 
 function BeforeAfterSlider({ original, protected: protectedSrc }) {
   const [pos, setPos] = useState(50)
