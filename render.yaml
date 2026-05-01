@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: luxe-backend
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    plan: standard          # 2 GB RAM — required for SegFormer + UNet at startup
+    healthCheckPath: /health
+    disk:
+      name: checkpoints
+      mountPath: /opt/render/project/src/backend/checkpoints
+      sizeGB: 2             # segformer_lip (105MB) + cloak_unet (15MB) for fast path
+    envVars:
+      - key: CORS_ORIGIN
+        sync: false         # set to your Vercel URL in the Render dashboard
