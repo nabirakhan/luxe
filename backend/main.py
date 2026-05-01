@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from io import BytesIO
 from typing import Literal
@@ -47,10 +48,11 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Luxe Protection API", lifespan=lifespan)
 
-# CORS — Vercel origin in prod, wildcard in dev
+# CORS — set CORS_ORIGIN env var in production (Render → your Vercel URL)
+_cors_origin = os.environ.get("CORS_ORIGIN", "*")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten to Vercel URL in production
+    allow_origins=[_cors_origin],
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
     expose_headers=["X-Checkpoint-Status", "X-Processing-Path"],

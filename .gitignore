@@ -13,3 +13,12 @@ Thumbs.db
 .env.local
 .env.*.local
 *.local
+
+# Model checkpoints — large binaries, upload to Render disk manually
+backend/checkpoints/*.pth
+
+# Python / Node
+__pycache__/
+*.pyc
+node_modules/
+frontend/dist/
