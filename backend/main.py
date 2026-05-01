@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+import subprocess
 from contextlib import asynccontextmanager
 from io import BytesIO
 from typing import Literal
@@ -23,12 +24,14 @@ _protector: Protector | None = None
 _processing_lock: asyncio.Lock | None = None
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global _protector, _processing_lock
-
-    # Create lock inside the running event loop (not get_event_loop — deprecated in 3.10+)
-    _processing_lock = asyncio.Lock()
+async def _init_protector():
+    global _protector
+    logger.info("Downloading checkpoints...")
+    try:
+        subprocess.run(["python", "download_checkpoints.py"], check=True)
+        logger.info("Checkpoints downloaded.")
+    except Exception as e:
+        logger.warning(f"Checkpoint download failed: {e}")
 
     logger.info("Initialising Protector (SegFormer)...")
     _protector = Protector()
@@ -41,6 +44,16 @@ async def lifespan(app: FastAPI):
             "This must be present for demo day."
         )
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _processing_lock
+    _processing_lock = asyncio.Lock()
+
+    # Start checkpoint download + protector init in background
+    # so uvicorn is up immediately for Railway healthcheck
+    asyncio.create_task(_init_protector())
+
     yield
 
     logger.info("Shutting down.")
@@ -48,7 +61,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Luxe Protection API", lifespan=lifespan)
 
-# CORS — set CORS_ORIGIN env var in production (Render → your Vercel URL)
+# CORS — set CORS_ORIGIN env var in production
 _cors_origin = os.environ.get("CORS_ORIGIN", "*")
 app.add_middleware(
     CORSMiddleware,
@@ -68,7 +81,6 @@ def _validate_image(data: bytes) -> None:
     if len(data) > config.MAX_UPLOAD_BYTES:
         raise HTTPException(413, "File too large (max 10 MB)")
 
-    # Two-buffer pattern: verify() destroys the handle, so we need a fresh BytesIO
     buf = BytesIO(data)
     try:
         Image.open(buf).verify()
@@ -79,8 +91,6 @@ def _validate_image(data: bytes) -> None:
     try:
         Image.open(buf).convert("RGB")
     except Exception:
-        # verify() passes silently for malformed WEBP in many Pillow versions;
-        # convert("RGB") catches those edge cases.
         raise HTTPException(400, "Invalid or corrupted image file")
 
 
@@ -91,7 +101,8 @@ def _validate_image(data: bytes) -> None:
 @app.get("/health")
 async def health():
     status = _protector.checkpoint_status() if _protector else {}
-    return {"status": "ok", "checkpoints": status}
+    ready = _protector is not None
+    return {"status": "ok", "ready": ready, "checkpoints": status}
 
 
 @app.post("/protect")
@@ -100,7 +111,6 @@ async def protect_endpoint(
     mode: Literal["full", "nudify", "modify"] = Form(...),
     texture: bool = Form(False),
 ):
-    # Content-type validation
     ct = (file.content_type or "").lower()
     if not any(ct.startswith(t) for t in ("image/jpeg", "image/png", "image/webp")):
         raise HTTPException(415, "Unsupported media type — send JPEG, PNG, or WEBP")
@@ -109,7 +119,7 @@ async def protect_endpoint(
     _validate_image(data)
 
     if _processing_lock is None or _protector is None:
-        raise HTTPException(503, "Server not ready")
+        raise HTTPException(503, "Server not ready — checkpoints still loading, try again shortly")
 
     if _processing_lock.locked():
         raise HTTPException(429, "Processing in progress, try again shortly")
