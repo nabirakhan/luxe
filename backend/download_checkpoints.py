@@ -39,6 +39,7 @@ def main():
         quiet=False,
         use_cookies=False,
         remaining_ok=True,
+        fuzzy=True,
     )
 
     # Verify
