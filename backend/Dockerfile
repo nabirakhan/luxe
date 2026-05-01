@@ -4,6 +4,7 @@ WORKDIR /app
 
 # System deps for python-magic and image libs
 RUN apt-get update && apt-get install -y \
+    git \
     libmagic1 \
     libgl1 \
     libglib2.0-0 \
