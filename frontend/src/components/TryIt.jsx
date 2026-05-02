@@ -6,7 +6,7 @@ const MODES = [
   { id: 'nudify', label: 'Nudification Shield',  desc: 'Attacks the VAE encoder of fine-tuned SD v1.5 inpainting models. Corrupts the latent representation nudification pipelines depend on.' },
   { id: 'modify', label: 'Outfit-Swap Guard',    desc: 'Attacks InstructPix2Pix and IP-Adapter conditioning. Disrupts appearance-modification and outfit-swap threat class.' },
 ]
-
+//heh
 const API_URL = (import.meta.env.VITE_API_URL || 'http://localhost:8000').replace(/\/$/, '')
 
 function BeforeAfterSlider({ original, protected: protectedSrc }) {
