@@ -1,7 +1,7 @@
 import { motion } from 'motion/react'
 
 const TEAM = ['Nabira', 'Rameen', 'Aisha']
-const COURSE = 'Deep Learning Practice  ·  2026'
+const COURSE = 'Deep Learning for Perceptron  ·  2026'
 
 function GithubIcon() {
   return (
@@ -39,7 +39,7 @@ export default function Footer() {
         </div>
 
         <motion.a
-          href="https://github.com"
+          href="https://github.com/nabirakhan/luxe/"
           target="_blank"
           rel="noopener noreferrer"
           whileHover={{ color: 'var(--cream)', y: -2 }}
