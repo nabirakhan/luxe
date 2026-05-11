@@ -1,7 +1,0 @@
-metric,value,target,pass
-pgd_latent_distance,46.7085,>10,YES
-pgd_visual_lpips,0.3990,<0.05,NO — needs epsilon tuning
-pgd_disruption_lpips,0.2769,>0.75,PARTIAL — real signal
-unet_disruption_lpips,0.0765,>0.75,NO — loss imbalance
-unet_visual_lpips,0.0157,<0.05,YES
-unet_speed_seconds,0.14,<1.0,YES
