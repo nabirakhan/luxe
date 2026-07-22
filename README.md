@@ -17,11 +17,11 @@
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.x-EE4C2C?style=flat-square&logo=pytorch&logoColor=white)
 ![React](https://img.shields.io/badge/React-18-61DAFB?style=flat-square&logo=react&logoColor=black)
 ![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white)
-![Vercel](https://img.shields.io/badge/Frontend-Vercel-000?style=flat-square&logo=vercel&logoColor=white)
-![Render](https://img.shields.io/badge/Backend-Render-46E3B7?style=flat-square&logo=render&logoColor=black)
+[![Frontend](https://img.shields.io/badge/Frontend-luxe--dlp.vercel.app-000?style=flat-square&logo=vercel&logoColor=white)](https://luxe-dlp.vercel.app)
+[![Backend](https://img.shields.io/badge/Backend-HuggingFace%20Spaces-FFD21E?style=flat-square&logo=huggingface&logoColor=black)](https://rameenzehra-luxe-backend.hf.space)
 
 *Deep Learning for Perceptron — May 2026*  
-Nabira Khan · Rameen · Aisha
+Nabira Khan [23k-0914] · Rameen Zehra [23k-0501] · Aisha Asif [23k-0915]
 
 </div>
 
@@ -126,8 +126,8 @@ Checkpoints download automatically at startup from Google Drive via `backend/dow
 
 | Layer | Technology | Host |
 |-------|------------|------|
-| Frontend | React 18 · Vite · Three.js · Framer Motion · Tailwind | Vercel |
-| Backend API | Python 3.10 · FastAPI · Uvicorn | Render |
+| Frontend | React 18 · Vite · Three.js · Framer Motion · Tailwind | [Vercel](https://luxe-dlp.vercel.app) |
+| Backend API | Python 3.10 · FastAPI · Uvicorn | [Hugging Face Spaces](https://rameenzehra-luxe-backend.hf.space) |
 | Adversarial engine | PyTorch 2.x · PGD · EOT | Backend |
 | Segmentation | SegFormer-B2 (fine-tuned LIP) | Backend |
 | Nudification surrogate | SD v1.5 Inpainting VAE (fine-tuned) | Backend |
@@ -163,24 +163,29 @@ npm run dev
 
 ## Deployment
 
-### Backend → Render
+### Backend → Hugging Face Spaces
 
-1. **New Web Service** → connect this repo, root directory `backend/`
-2. Set environment variable:
-   ```
-   CORS_ORIGIN = https://<your-vercel-url>.vercel.app
-   ```
-3. Checkpoints download automatically on first boot
-4. Verify `/health` returns all 5 checkpoints `true`
+Live at: **https://rameenzehra-luxe-backend.hf.space**
 
-> Minimum: **Standard plan (2 GB RAM)** for SegFormer + UNet at startup.
+1. Create a Space (Docker SDK) under the `rameenzehra` account
+2. Push the `backend/` directory — the `Dockerfile` is already configured
+3. Set Space secrets:
+   ```
+   CORS_ORIGIN = https://luxe-dlp.vercel.app
+   ```
+4. Checkpoints download automatically on first boot via `download_checkpoints.py`
+5. Verify `/health` returns all 5 checkpoints `true`
+
+> HF Spaces free tier provides enough RAM for SegFormer + CloakUNet. Cold starts may take ~30s.
 
 ### Frontend → Vercel
+
+Live at: **https://luxe-dlp.vercel.app**
 
 1. **New Project** → import this repo, root directory `frontend/`
 2. Add environment variable:
    ```
-   VITE_API_URL = https://<your-render-service>.onrender.com
+   VITE_API_URL = https://rameenzehra-luxe-backend.hf.space
    ```
 3. Deploy — Vercel detects Vite automatically
 
